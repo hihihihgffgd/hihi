@@ -455,7 +455,7 @@ st.caption(f"총 {NUM_GAMES} 게임 ({NUM_DAYS}일 자동 분배, 1일 3~4게임
 with st.sidebar:
     st.header("⚙️ 스케줄 생성 설정")
     time_limit_sec = st.slider(
-        "최대 계산 시간 (초)", min_value=10, max_value=300, value=60, step=10,
+        "계산 시간 (초)[높을수록 퀄리티 높은 대진]", min_value=10, max_value=300, value=10, step=10,
         help="솔버가 해를 찾는 최대 시간을 설정합니다. 시간이 짧으면 최적해를 찾지 못할 수 있습니다."
     )
     st.subheader("🚫 날짜별 출전 금지 선수")
