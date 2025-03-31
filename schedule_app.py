@@ -299,9 +299,11 @@ def solve_schedule(positions, player_data,
     for d in range(num_days):
         games_this_day = [game_on_day_vars[d][g] for g in range(num_games)]
         model.Add(sum(games_this_day) >= 3); model.Add(sum(games_this_day) <= 4); count_day_bal += 2
+    model.Add(sum(game_on_day_vars[0][g] for g in range(num_games)) == 4)
+    count_day_bal += 1
     constraint_count += count_day_bal; update_status(f"[제약 추가 완료] (NEW) 날짜 균등 분배 제약 약 {count_day_bal}개 추가.")
 
-    # (C7) 특정 날짜 출전 금지
+    # (C7)호 특정 날짜 출전 금지
     update_status("[제약 추가 중] (C7) 특정 날짜 출전 금지..."); count_c7 = 0
     for day_idx, banned_ids in banned_player_ids_by_day.items():
         if banned_ids:
@@ -453,10 +455,10 @@ st.title("🎮 선수 팀 배정 스케줄 생성기 (10 게임 고정)")
 st.caption(f"총 {NUM_GAMES} 게임 ({NUM_DAYS}일 자동 분배, 1일 3~4게임) | 1티어 1회씩 맞대결 | 동포지션 적군 1회 고정 | 아군 조합 0회 매치업 최소화 | 적군 조합 0회 매치업 최소화") # <<< 캡션 수정
 
 with st.sidebar:
-    st.header("⚙️ 스케줄 생성 설정")
+    st.header("⚙️ 계산 시간(초)")
     time_limit_sec = st.slider(
-        "계산 시간 (초)[높을수록 퀄리티 높은 대진]", min_value=10, max_value=300, value=10, step=10,
-        help="솔버가 해를 찾는 최대 시간을 설정합니다. 시간이 짧으면 최적해를 찾지 못할 수 있습니다."
+        "시간이 올라갈 수록 대진 퀄리티 증가", min_value=10, max_value=300, value=10, step=10,
+        help="솔버가 해를 찾는 최대 시간을 설정합니다."
     )
     st.subheader("🚫 날짜별 출전 금지 선수")
     banned_players_by_day_ui = defaultdict(set)
@@ -467,97 +469,119 @@ with st.sidebar:
         if banned_list_display:
             banned_players_by_day_ui[d] = set(banned_list_display)
 
-st.header("🚀 스케줄 생성 실행")
-results_area = st.container()
+st.header("🚀 시작 버튼을 누르신 후, 계산이 진행되는 동안 잠시 기다리시고 스크롤을 내려주세요.")
 
-if st.button(f"{NUM_GAMES} 게임 스케줄 생성 시작!"):
-    results_area.empty()
+# <<< 버튼 상태 관리를 위한 세션 상태 초기화 >>>
+if 'processing_started' not in st.session_state:
+    st.session_state.processing_started = False
+
+# <<< 버튼 표시 영역 >>>
+button_placeholder = st.empty() # 버튼을 표시하거나 지울 컨테이너
+
+if not st.session_state.processing_started:
+    # 아직 처리 시작 전이면 버튼 표시
+    if button_placeholder.button(f"{NUM_GAMES} 게임 스케줄 생성 시작!", key="start_button"):
+        st.session_state.processing_started = True
+        # 버튼 클릭 시 상태 변경 후 Streamlit이 자동으로 rerun 함
+        st.rerun() # 명시적으로 rerun을 호출하여 즉시 버튼을 숨김
+
+# <<< 스케줄 생성 및 결과 표시 영역 >>>
+if st.session_state.processing_started:
+    # 처리 시작 상태이면 버튼 컨테이너 비우기 (버튼 숨김)
+    button_placeholder.empty()
+
+    results_area = st.container()
     with results_area:
         st.info(f"{NUM_GAMES} 게임 스케줄 생성 시도 (0회 매치업 최소화 목표, 최대 {time_limit_sec}초)...")
         overall_status_logs = []
-        search_start_time = time.time(); solution_found = False
+        search_start_time = time.time()
+        solution_found = False
         final_schedule = None; final_assignments = None
         final_status = cp_model.UNKNOWN
 
-        schedule_result, assignment_result, status_log, final_status = solve_schedule(
-            positions=positions, player_data=player_data,
-            num_teams_per_game=num_teams_per_game, players_per_team=players_per_team,
-            banned_players_by_day=dict(banned_players_by_day_ui),
-            time_limit_seconds=time_limit_sec
-        )
-        overall_status_logs.extend(status_log)
+        try: # solve_schedule 및 결과 처리 전체를 try 블록으로 감싸서 상태 리셋 보장
+            schedule_result, assignment_result, status_log, final_status = solve_schedule(
+                positions=positions, player_data=player_data,
+                num_teams_per_game=num_teams_per_game, players_per_team=players_per_team,
+                banned_players_by_day=dict(banned_players_by_day_ui),
+                time_limit_seconds=time_limit_sec
+            )
+            overall_status_logs.extend(status_log)
 
-        search_end_time = time.time()
-        st.info(f"실행 완료. (실제 소요 시간: {search_end_time - search_start_time:.2f}초 / 요청 시간 제한: {time_limit_sec}초)")
+            search_end_time = time.time()
+            st.info(f"실행 완료. (실제 소요 시간: {search_end_time - search_start_time:.2f}초 / 요청 시간 제한: {time_limit_sec}초)")
 
-        if final_status == cp_model.OPTIMAL:
-            st.success(f"성공! 최적 스케줄 발견!")
-            final_schedule = schedule_result; final_assignments = assignment_result; solution_found = True
-        elif final_status == cp_model.FEASIBLE:
-            st.success(f"성공! 실행 가능한 스케줄 발견! (시간 제한 도달, 최적해가 아닐 수 있습니다)")
-            final_schedule = schedule_result; final_assignments = assignment_result; solution_found = True
-        elif final_status == cp_model.INFEASIBLE:
-            st.error(f"실패: 제약 조건을 모두 만족하는 스케줄을 찾을 수 없습니다. (INFEASIBLE) **연속 경기 금지 조건이 너무 엄격할 수 있습니다.**") # <<< 메시지 추가
-        elif final_status == cp_model.MODEL_INVALID:
-             st.error(f"실패: 모델 정의에 오류가 있습니다. (MODEL_INVALID)")
-        else:
-             st.error(f"실패: 스케줄을 찾지 못했습니다. (상태: {cp_model.CpSolverStatus.Name(final_status)})")
-
-
-        if solution_found and final_schedule and final_assignments:
-            st.header(f"📊 최종 스케줄 ({NUM_GAMES} 게임)")
-            schedule_table_data = []
-            pos_indices = list(range(len(positions)))
-            sorted_games = sorted(final_schedule.keys(), key=lambda g: (final_schedule[g]['day'], final_schedule[g]['game_id']))
-
-            for g in sorted_games:
-                game_info = final_schedule[g]
-                game_data = {'Day': game_info['day'], 'Game': game_info['game_id'], 'vs': 'vs'}
-                for t in range(num_teams_per_game):
-                    team_prefix = 'Team A' if t == 0 else 'Team B'
-                    for p_idx in pos_indices:
-                        player_id = final_assignments.get((g, t, p_idx), -1)
-                        display_text = "-"
-                        p_pos = positions[p_idx]
-                        if player_id != -1:
-                            _, p_alias_found, p_pos_found, _ = get_player_info(player_id)
-                            p_alias = p_alias_found if p_alias_found != "?" else "-"
-                            display_text = str(p_alias) if p_alias else "-"
-                            p_pos = p_pos_found if p_pos_found != "?" else p_pos
-
-                        column_name = f"{team_prefix} ({p_pos})"
-                        game_data[column_name] = display_text
-                schedule_table_data.append(game_data)
-
-            if schedule_table_data:
-                schedule_df = pd.DataFrame(schedule_table_data)
-                schedule_df = schedule_df.sort_values(by=['Day', 'Game'])
-
-                display_rows = []
-                last_day = None
-                column_order = ['Day']
-                team_a_cols = [f"Team A ({pos})" for pos in positions]
-                team_b_cols = [f"Team B ({pos})" for pos in positions]
-                column_order.extend(team_a_cols)
-                column_order.append('vs')
-                column_order.extend(team_b_cols)
-                blank_row_dict = {col: '' for col in column_order}
-
-                for index, row in schedule_df.iterrows():
-                    current_day = row['Day']
-                    if last_day is not None and current_day != last_day:
-                        display_rows.append(blank_row_dict.copy())
-
-                    display_row_data = {col: row.get(col, '') for col in column_order}
-                    display_rows.append(display_row_data)
-                    last_day = current_day
-
-                display_df = pd.DataFrame(display_rows, columns=column_order)
-                st.dataframe(display_df.style.hide(axis="index"), use_container_width=True)
-
+            if final_status == cp_model.OPTIMAL:
+                st.success(f"성공! 최적 스케줄 발견!")
+                final_schedule = schedule_result; final_assignments = assignment_result; solution_found = True
+            elif final_status == cp_model.FEASIBLE:
+                st.success(f"성공! 실행 가능한 스케줄 발견! (시간 제한 도달, 최적해가 아닐 수 있습니다)")
+                final_schedule = schedule_result; final_assignments = assignment_result; solution_found = True
+            elif final_status == cp_model.INFEASIBLE:
+                st.error(f"실패: 제약 조건을 모두 만족하는 스케줄을 찾을 수 없습니다. (INFEASIBLE) 연속 경기 금지 조건이 너무 엄격할 수 있습니다.")
+            elif final_status == cp_model.MODEL_INVALID:
+                 st.error(f"실패: 모델 정의에 오류가 있습니다. (MODEL_INVALID)")
             else:
-                 st.warning("스케줄 데이터 생성 중 문제가 발생했습니다.")
+                 st.error(f"실패: 스케줄을 찾지 못했습니다. (상태: {cp_model.CpSolverStatus.Name(final_status)})")
 
 
-        with st.expander("상세 실행 로그 보기"):
-            st.text("\n".join(overall_status_logs))
+            if solution_found and final_schedule and final_assignments:
+                st.header(f"📊 최종 스케줄 ({NUM_GAMES} 게임)")
+                # ... (스케줄 표 생성 및 표시 로직 - 이전과 동일) ...
+                schedule_table_data = []
+                pos_indices = list(range(len(positions)))
+                sorted_games = sorted(final_schedule.keys(), key=lambda g: (final_schedule[g]['day'], final_schedule[g]['game_id']))
+
+                for g in sorted_games:
+                    game_info = final_schedule[g]
+                    game_data = {'Day': game_info['day'], 'Game': game_info['game_id'], 'vs': 'vs'}
+                    for t in range(num_teams_per_game):
+                        team_prefix = 'Team A' if t == 0 else 'Team B'
+                        for p_idx in pos_indices:
+                            player_id = final_assignments.get((g, t, p_idx), -1)
+                            display_text = "-"
+                            p_pos = positions[p_idx]
+                            if player_id != -1:
+                                _, p_alias_found, p_pos_found, _ = get_player_info(player_id)
+                                p_alias = p_alias_found if p_alias_found != "?" else "-"
+                                display_text = str(p_alias) if p_alias else "-"
+                                p_pos = p_pos_found if p_pos_found != "?" else p_pos
+
+                            column_name = f"{team_prefix} ({p_pos})"
+                            game_data[column_name] = display_text
+                    schedule_table_data.append(game_data)
+
+                if schedule_table_data:
+                    schedule_df = pd.DataFrame(schedule_table_data)
+                    schedule_df = schedule_df.sort_values(by=['Day', 'Game'])
+
+                    display_rows = []
+                    last_day = None
+                    column_order = ['Day']
+                    team_a_cols = [f"Team A ({pos})" for pos in positions]
+                    team_b_cols = [f"Team B ({pos})" for pos in positions]
+                    column_order.extend(team_a_cols)
+                    column_order.append('vs')
+                    column_order.extend(team_b_cols)
+                    blank_row_dict = {col: '' for col in column_order}
+
+                    for index, row in schedule_df.iterrows():
+                        current_day = row['Day']
+                        if last_day is not None and current_day != last_day:
+                            display_rows.append(blank_row_dict.copy())
+
+                        display_row_data = {col: row.get(col, '') for col in column_order}
+                        display_rows.append(display_row_data)
+                        last_day = current_day
+
+                    display_df = pd.DataFrame(display_rows, columns=column_order)
+                    st.dataframe(display_df.style.hide(axis="index"), use_container_width=True)
+
+                else:
+                     st.warning("스케줄 데이터 생성 중 문제가 발생했습니다.")
+
+            with st.expander("상세 실행 로그 보기"):
+                st.text("\n".join(overall_status_logs))
+
+        finally:
+            st.session_state.processing_started = False
